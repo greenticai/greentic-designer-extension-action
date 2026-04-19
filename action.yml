@@ -8,12 +8,32 @@ branding:
 inputs:
   registry:
     description: |
-      Target registry URI. One of:
+      Target registry URI. Usually not needed when `store-url` is set.
+      Accepts:
         * oci://<host>/<namespace>[/<artifact-name>]  (GHCR, Docker Hub, ACR, Harbor)
         * file://<absolute-path>                       (local filesystem)
         * local                                        (= $GREENTIC_HOME/registries/local)
         * <name>                                       (named entry from ~/.greentic/config.toml)
-    required: true
+      When `store-url` + `store-token` are supplied and `registry` is empty,
+      the action defaults to `greentic-store` (auto-wired to store-url).
+    required: false
+    default: ''
+
+  store-url:
+    description: |
+      Shorthand for Greentic Store HTTP push. When set, the action writes
+      ~/.greentic/config.toml with a registry entry named "greentic-store"
+      pointing at this URL, and auto-selects it unless `registry` overrides.
+      Example: http://62.171.174.152:3030
+    required: false
+    default: ''
+
+  store-token:
+    description: |
+      JWT bearer for the Store server in `store-url`. When set, the action
+      writes ~/.greentic/credentials.toml (mode 0600). Pair with `store-url`.
+    required: false
+    default: ''
 
   manifest:
     description: 'Path to the project Cargo.toml. Default: ./Cargo.toml'
@@ -131,6 +151,52 @@ runs:
         gtdx --version
         cargo component --version
 
+    - name: Wire Greentic Store config (if store-url supplied)
+      if: inputs.store-url != ''
+      shell: bash
+      env:
+        STORE_URL: ${{ inputs.store-url }}
+        STORE_TOKEN: ${{ inputs.store-token }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.greentic"
+        cat > "$HOME/.greentic/config.toml" <<EOF
+        [default]
+        registry = "greentic-store"
+        trust-policy = "normal"
+
+        [[registries]]
+        name = "greentic-store"
+        url = "$STORE_URL"
+        EOF
+        if [ -n "$STORE_TOKEN" ]; then
+          umask 077
+          cat > "$HOME/.greentic/credentials.toml" <<EOF
+        [tokens]
+        greentic-store = "$STORE_TOKEN"
+        EOF
+          chmod 0600 "$HOME/.greentic/credentials.toml"
+        else
+          echo "::warning::store-url was provided without store-token. Publish will 401 unless the server accepts anonymous writes."
+        fi
+
+    - name: Resolve registry input
+      id: resolve-registry
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        STORE_URL: ${{ inputs.store-url }}
+      run: |
+        set -euo pipefail
+        if [ -z "$REGISTRY" ] && [ -n "$STORE_URL" ]; then
+          echo "registry=greentic-store" >> "$GITHUB_OUTPUT"
+        elif [ -z "$REGISTRY" ]; then
+          echo "::error::Either 'registry' or 'store-url' must be set."
+          exit 1
+        else
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Publish
       id: publish
       shell: bash
@@ -144,7 +210,7 @@ runs:
         set -euo pipefail
 
         args=(publish
-          --registry "${{ inputs.registry }}"
+          --registry "${{ steps.resolve-registry.outputs.registry }}"
           --manifest "${{ inputs.manifest }}"
           --format   "${{ inputs.format }}"
         )

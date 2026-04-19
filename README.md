@@ -6,9 +6,47 @@ and publishes the resulting `.gtxpack` to your registry of choice.
 
 Supports all three registry backends that the `gtdx` CLI ships:
 
-- `oci://<host>/<namespace>[/<artifact>]` — GHCR, Docker Hub, Harbor, Azure ACR, or any OCI Distribution v2 registry
-- `file://<absolute-path>` — local filesystem layout
-- Named entries in `~/.greentic/config.toml` — Greentic Store HTTP
+- **Greentic Store HTTP** — set `store-url` + `store-token`, action auto-writes config
+- **OCI registries** — `oci://<host>/<namespace>[/<artifact>]` (GHCR, Docker Hub, Harbor, Azure ACR)
+- **Local filesystem** — `file://<absolute-path>` (mostly for dry-run PR checks)
+
+## Quick start — publish to Greentic Store on every tag
+
+```yaml
+# .github/workflows/release.yml
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: greenticai/greentic-designer-extension-action@v1
+        with:
+          store-url: http://62.171.174.152:3030
+          store-token: ${{ secrets.GREENTIC_STORE_TOKEN }}
+          version: ${{ github.ref_name }}
+```
+
+That's it. Action writes `~/.greentic/{config,credentials}.toml` internally
+and pushes via gtdx.
+
+**Prerequisite:** add `GREENTIC_STORE_TOKEN` as a repo secret. Get the JWT by:
+
+```bash
+curl -X POST http://62.171.174.152:3030/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"your name","handle":"yourhandle","email":"you@example.com","password":"<pw>"}'
+# response has a "token" field — paste that into the GitHub secret
+```
+
+Your extension's `describe.metadata.id` must start with one of the
+`allowed_prefixes` returned by the register response.
 
 ## Quick start — publish to GitHub Container Registry on every tag
 
@@ -32,7 +70,6 @@ jobs:
       - uses: greenticai/greentic-designer-extension-action@v1
         with:
           registry: oci://ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
-          # version override from the tag — strips the leading `v`
           version: ${{ github.ref_name }}
 ```
 
@@ -43,7 +80,9 @@ as long as the job has `permissions: packages: write`.
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `registry` | **yes** | — | Target registry URI. `oci://...`, `file://...`, `local`, or a named Store entry. |
+| `registry` | conditional | — | Target registry URI. `oci://...`, `file://...`, `local`, or a named Store entry. Optional when `store-url` is set. |
+| `store-url` | no | — | Shorthand: Greentic Store HTTP URL. Action auto-writes `~/.greentic/config.toml`. |
+| `store-token` | no | — | JWT bearer for the Store in `store-url`. Action writes `~/.greentic/credentials.toml` mode 0600. |
 | `manifest` | no | `./Cargo.toml` | Path to the extension project's `Cargo.toml`. |
 | `version` | no | *(from describe.json)* | Override `describe.json` version — useful when tags drive CI. |
 | `force` | no | `false` | Overwrite an existing version in the target registry. |
@@ -105,12 +144,8 @@ jobs:
 ```yaml
       - uses: greenticai/greentic-designer-extension-action@v1
         with:
-          registry: mystore
-        env:
-          # gtdx reads this via ~/.greentic/credentials.toml; the action does not
-          # set up config.toml itself — you can vendor one in the repo or
-          # write it with a previous step.
-          STORE_TOKEN: ${{ secrets.STORE_TOKEN }}
+          store-url: https://my-private-store.example.com
+          store-token: ${{ secrets.STORE_TOKEN }}
 ```
 
 ## How it works
