@@ -1,0 +1,41 @@
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  dry-run-local:
+    name: Scaffold + dry-run publish to local
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.94'
+          targets: wasm32-wasip2
+
+      - name: Install gtdx (for scaffolding in the test)
+        run: |
+          cargo install --locked --git https://github.com/greentic-biz/greentic-designer-extensions.git greentic-ext-cli
+
+      - name: Scaffold a design extension
+        run: |
+          gtdx new testext \
+            --id com.test.selftest \
+            --author tester \
+            --dir ./testext \
+            -y --no-git
+
+      - name: Dry-run publish via this action
+        uses: ./
+        with:
+          registry: local
+          manifest: ./testext/Cargo.toml
+          dry-run: 'true'
+          format: json
