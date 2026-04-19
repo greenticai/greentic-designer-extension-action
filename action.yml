@@ -30,8 +30,11 @@ inputs:
 
   store-token:
     description: |
-      JWT bearer for the Store server in `store-url`. When set, the action
-      writes ~/.greentic/credentials.toml (mode 0600). Pair with `store-url`.
+      Bearer token for the Store server in `store-url`. Accepts either:
+        * a long-lived API token (format `gts_...`) — preferred for CI
+        * a short-lived JWT from `/api/v1/auth/login` (expires after 24h)
+      When set, the action writes ~/.greentic/credentials.toml mode 0600.
+      Pair with `store-url`.
     required: false
     default: ''
 
