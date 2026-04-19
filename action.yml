@@ -1,0 +1,190 @@
+name: 'Greentic Designer Extension Publish'
+description: 'Build + publish a Greentic Designer Extension (.gtxpack) via the gtdx CLI'
+author: 'greenticai'
+branding:
+  icon: 'package'
+  color: 'green'
+
+inputs:
+  registry:
+    description: |
+      Target registry URI. One of:
+        * oci://<host>/<namespace>[/<artifact-name>]  (GHCR, Docker Hub, ACR, Harbor)
+        * file://<absolute-path>                       (local filesystem)
+        * local                                        (= $GREENTIC_HOME/registries/local)
+        * <name>                                       (named entry from ~/.greentic/config.toml)
+    required: true
+
+  manifest:
+    description: 'Path to the project Cargo.toml. Default: ./Cargo.toml'
+    required: false
+    default: './Cargo.toml'
+
+  version:
+    description: 'Override describe.json version — useful for CI tag bumps (e.g. v1.2.3 → 1.2.3).'
+    required: false
+    default: ''
+
+  force:
+    description: 'Overwrite an existing version in the target registry.'
+    required: false
+    default: 'false'
+
+  dry-run:
+    description: 'Validate + build + pack, skip the registry write. Useful for PR checks.'
+    required: false
+    default: 'false'
+
+  oci-token:
+    description: |
+      Bearer/PAT for oci:// registries. When unset the action falls back in
+      order to: GHCR_TOKEN env, GITHUB_TOKEN env (auto-injected in GHA), OCI_TOKEN
+      env, then anonymous. Grant the job `permissions: packages: write` when
+      pushing to ghcr.io.
+    required: false
+    default: ''
+
+  format:
+    description: '"human" (default) or "json" output'
+    required: false
+    default: 'human'
+
+  gtdx-ref:
+    description: |
+      Git ref of `greentic-designer-extensions` to build gtdx from.
+      Defaults to the latest tag. Pin a tag (e.g. "v0.2.0") or commit sha
+      for deterministic builds.
+    required: false
+    default: ''
+
+  rust-toolchain:
+    description: 'Rust toolchain version. Must support edition 2024 (>= 1.94).'
+    required: false
+    default: '1.94'
+
+  cargo-component-version:
+    description: 'cargo-component version to install. Default: latest compatible.'
+    required: false
+    default: ''
+
+outputs:
+  sha256:
+    description: 'SHA-256 of the published .gtxpack (from the JSON receipt).'
+    value: ${{ steps.publish.outputs.sha256 }}
+  registry-url:
+    description: 'URL of the published artifact (file://, http(s)://, or OCI manifest URL).'
+    value: ${{ steps.publish.outputs.registry-url }}
+  ext-id:
+    description: 'Extension id that was published.'
+    value: ${{ steps.publish.outputs.ext-id }}
+  version:
+    description: 'Published version.'
+    value: ${{ steps.publish.outputs.version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.rust-toolchain }}
+        targets: wasm32-wasip2
+
+    - name: Cache cargo-installed binaries
+      id: cache-cargo-bin
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin
+        key: gtdx-cargo-bin-${{ runner.os }}-rust${{ inputs.rust-toolchain }}-ref${{ inputs.gtdx-ref }}-cc${{ inputs.cargo-component-version }}-v1
+
+    - name: Install cargo-component
+      if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.cargo-component-version }}" ]; then
+          cargo install --locked --version "${{ inputs.cargo-component-version }}" cargo-component
+        else
+          cargo install --locked cargo-component
+        fi
+
+    - name: Install gtdx from greentic-designer-extensions repo
+      if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        REF_ARG=""
+        if [ -n "${{ inputs.gtdx-ref }}" ]; then
+          REF_ARG="--rev ${{ inputs.gtdx-ref }}"
+          # Try --tag first (semver tags), then fall back to --rev for commit shas.
+          if ! cargo install --locked --git https://github.com/greentic-biz/greentic-designer-extensions.git --tag "${{ inputs.gtdx-ref }}" greentic-ext-cli 2>/dev/null; then
+            cargo install --locked --git https://github.com/greentic-biz/greentic-designer-extensions.git --rev "${{ inputs.gtdx-ref }}" greentic-ext-cli
+          fi
+        else
+          cargo install --locked --git https://github.com/greentic-biz/greentic-designer-extensions.git greentic-ext-cli
+        fi
+
+    - name: Verify toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        gtdx --version
+        cargo component --version
+
+    - name: Publish
+      id: publish
+      shell: bash
+      env:
+        # The action defaults gtdx's oci-token lookup chain to:
+        # --oci-token (explicit) -> GHCR_TOKEN -> GITHUB_TOKEN -> OCI_TOKEN -> anonymous.
+        # In GitHub Actions we wire GITHUB_TOKEN automatically so `permissions:
+        # packages: write` + no extra config is enough.
+        GITHUB_TOKEN: ${{ inputs.oci-token != '' && inputs.oci-token || github.token }}
+      run: |
+        set -euo pipefail
+
+        args=(publish
+          --registry "${{ inputs.registry }}"
+          --manifest "${{ inputs.manifest }}"
+          --format   "${{ inputs.format }}"
+        )
+        if [ -n "${{ inputs.version }}" ]; then
+          args+=(--version "${{ inputs.version }}")
+        fi
+        if [ "${{ inputs.force }}" = "true" ]; then
+          args+=(--force)
+        fi
+        if [ "${{ inputs.dry-run }}" = "true" ]; then
+          args+=(--dry-run)
+        fi
+        if [ -n "${{ inputs.oci-token }}" ]; then
+          args+=(--oci-token "${{ inputs.oci-token }}")
+        fi
+
+        # Run gtdx publish and capture its output for parseable receipt access.
+        # When --format json is set, stdout is a single JSON object; otherwise
+        # we fall back to reading the receipt file that gtdx writes to ./dist/.
+        gtdx "${args[@]}" | tee gtdx-publish.stdout
+
+        # Prefer stdout JSON when --format json was used.
+        if [ "${{ inputs.format }}" = "json" ]; then
+          RECEIPT=$(grep -m1 '^{' gtdx-publish.stdout || true)
+        fi
+        # Otherwise pick the most recent receipt file written by gtdx.
+        if [ -z "${RECEIPT:-}" ]; then
+          RECEIPT=$(find "$(dirname "${{ inputs.manifest }}")/dist" -name 'publish-*.json' -print0 2>/dev/null \
+                    | xargs -0 -r ls -t | head -1 | xargs -r cat)
+        fi
+
+        if [ -n "${RECEIPT:-}" ]; then
+          sha=$(echo "$RECEIPT" | jq -r '.sha256 // empty')
+          url=$(echo "$RECEIPT" | jq -r '.registry // .registry_url // empty')
+          ext_id=$(echo "$RECEIPT" | jq -r '.ext_id // empty')
+          ver=$(echo "$RECEIPT" | jq -r '.version // empty')
+          {
+            echo "sha256=$sha"
+            echo "registry-url=$url"
+            echo "ext-id=$ext_id"
+            echo "version=$ver"
+          } >> "$GITHUB_OUTPUT"
+        fi
