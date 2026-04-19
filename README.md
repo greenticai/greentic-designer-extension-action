@@ -36,13 +36,27 @@ jobs:
 That's it. Action writes `~/.greentic/{config,credentials}.toml` internally
 and pushes via gtdx.
 
-**Prerequisite:** add `GREENTIC_STORE_TOKEN` as a repo secret. Get the JWT by:
+**Prerequisite:** add `GREENTIC_STORE_TOKEN` as a repo secret.
+
+The Store server issues two bearer token types:
+
+| Type | Format | Lifetime | Use for |
+|------|--------|----------|---------|
+| **API token** | `gts_...` | long-lived (until revoked) | **CI / this action** ← recommended |
+| JWT | `eyJ...` (3 dot-separated base64) | 24 hours | interactive `gtdx` runs |
+
+For CI, always use an API token — JWTs silently expire and break your
+release workflow 24 hours after issue. Create one (named e.g.
+`ci-github-actions`) via the Store dashboard or API, then paste its value
+into the repo secret.
+
+If you only have a JWT (for testing / first-time setup):
 
 ```bash
 curl -X POST http://62.171.174.152:3030/api/v1/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"name":"your name","handle":"yourhandle","email":"you@example.com","password":"<pw>"}'
-# response has a "token" field — paste that into the GitHub secret
+# response has a "token" field (JWT, 24h) and "publisher.allowed_prefixes".
 ```
 
 Your extension's `describe.metadata.id` must start with one of the
