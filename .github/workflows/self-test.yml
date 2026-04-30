@@ -17,12 +17,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: '1.94'
+          toolchain: '1.95'
           targets: wasm32-wasip2
 
       - name: Install gtdx (for scaffolding in the test)
         run: |
-          cargo install --locked --git https://github.com/greentic-biz/greentic-designer-extensions.git greentic-ext-cli
+          cargo install --locked greentic-extension-sdk-cli
 
       - name: Scaffold a design extension
         run: |
