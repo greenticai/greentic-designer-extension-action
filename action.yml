@@ -72,18 +72,18 @@ inputs:
     required: false
     default: 'human'
 
-  gtdx-ref:
+  gtdx-version:
     description: |
-      Git ref of `greentic-designer-extensions` to build gtdx from.
-      Defaults to the latest tag. Pin a tag (e.g. "v0.2.0") or commit sha
-      for deterministic builds.
+      Version constraint for `greentic-extension-sdk-cli` on crates.io
+      (e.g. "0.4" or "=0.4.2"). Defaults to the latest published 0.4.x.
+      The installed binary is `gtdx`.
     required: false
     default: ''
 
   rust-toolchain:
-    description: 'Rust toolchain version. Must support edition 2024 (>= 1.94).'
+    description: 'Rust toolchain version. Must support edition 2024 (>= 1.95).'
     required: false
-    default: '1.94'
+    default: '1.95'
 
   cargo-component-version:
     description: 'cargo-component version to install. Default: latest compatible.'
@@ -118,7 +118,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.cargo/bin
-        key: gtdx-cargo-bin-${{ runner.os }}-rust${{ inputs.rust-toolchain }}-ref${{ inputs.gtdx-ref }}-cc${{ inputs.cargo-component-version }}-v1
+        key: gtdx-cargo-bin-${{ runner.os }}-rust${{ inputs.rust-toolchain }}-ver${{ inputs.gtdx-version }}-cc${{ inputs.cargo-component-version }}-v2
 
     - name: Install cargo-component
       if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
@@ -131,20 +131,15 @@ runs:
           cargo install --locked cargo-component
         fi
 
-    - name: Install gtdx from greentic-designer-extensions repo
+    - name: Install gtdx from crates.io
       if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
-        REF_ARG=""
-        if [ -n "${{ inputs.gtdx-ref }}" ]; then
-          REF_ARG="--rev ${{ inputs.gtdx-ref }}"
-          # Try --tag first (semver tags), then fall back to --rev for commit shas.
-          if ! cargo install --locked --git https://github.com/greentic-biz/greentic-designer-extensions.git --tag "${{ inputs.gtdx-ref }}" greentic-ext-cli 2>/dev/null; then
-            cargo install --locked --git https://github.com/greentic-biz/greentic-designer-extensions.git --rev "${{ inputs.gtdx-ref }}" greentic-ext-cli
-          fi
+        if [ -n "${{ inputs.gtdx-version }}" ]; then
+          cargo install --locked --version "${{ inputs.gtdx-version }}" greentic-extension-sdk-cli
         else
-          cargo install --locked --git https://github.com/greentic-biz/greentic-designer-extensions.git greentic-ext-cli
+          cargo install --locked greentic-extension-sdk-cli
         fi
 
     - name: Verify toolchain

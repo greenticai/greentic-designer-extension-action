@@ -103,8 +103,8 @@ as long as the job has `permissions: packages: write`.
 | `dry-run` | no | `false` | Validate + build + pack but skip the registry write. Useful for PR checks. |
 | `oci-token` | no | *(`GITHUB_TOKEN`)* | Bearer/PAT for `oci://` registries. Action falls back to `GITHUB_TOKEN` automatically. |
 | `format` | no | `human` | `human` or `json` output format. |
-| `gtdx-ref` | no | *(latest tag)* | Git ref (tag or commit) of `greentic-designer-extensions` to build gtdx from. |
-| `rust-toolchain` | no | `1.94` | Rust toolchain (>= 1.94 for edition 2024). |
+| `gtdx-version` | no | *(latest 0.4.x)* | Version constraint for `greentic-extension-sdk-cli` on crates.io (e.g. `0.4` or `=0.4.2`). |
+| `rust-toolchain` | no | `1.95` | Rust toolchain (>= 1.95 for edition 2024). |
 | `cargo-component-version` | no | *(latest)* | `cargo-component` version pin. |
 
 ## Outputs
@@ -168,7 +168,7 @@ Under the hood this action:
 
 1. Installs the requested Rust toolchain + `wasm32-wasip2` target (`dtolnay/rust-toolchain@master`).
 2. Caches `~/.cargo/bin` keyed on the action inputs, so `cargo install` only runs on the first run (or when inputs change).
-3. Installs `cargo-component` and `gtdx` (from the `greentic-designer-extensions` git repo, since the crates aren't yet published on crates.io).
+3. Installs `cargo-component` and `gtdx` from crates.io (`greentic-extension-sdk-cli`, which ships the `gtdx` binary).
 4. Runs `gtdx publish` with your inputs forwarded as flags.
 5. Parses the JSON receipt written to `./dist/publish-*.json` and exposes `sha256` / `registry-url` / `ext-id` / `version` as action outputs.
 
