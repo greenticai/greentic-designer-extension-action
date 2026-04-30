@@ -134,10 +134,23 @@ runs:
     - name: Install gtdx from crates.io
       if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        GTDX_VERSION: ${{ inputs.gtdx-version }}
       run: |
         set -euo pipefail
-        if [ -n "${{ inputs.gtdx-version }}" ]; then
-          cargo install --locked --version "${{ inputs.gtdx-version }}" greentic-extension-sdk-cli
+        # `cargo install --version` rejects bare partial versions like "0.4"
+        # ("unexpected end of input while parsing minor version number"). It
+        # accepts SemVer range syntax (^0.4, >=0.4, =0.4.2). Auto-prefix `^`
+        # for bare partials so callers can write `gtdx-version: "0.4"` and
+        # get the latest 0.4.x as expected.
+        if [ -n "$GTDX_VERSION" ]; then
+          arg="$GTDX_VERSION"
+          case "$arg" in
+            \^*|=*|\>*|\<*|~*) ;;  # already has a range qualifier
+            *) arg="^${arg}" ;;
+          esac
+          echo "==> cargo install --locked --version '$arg' greentic-extension-sdk-cli"
+          cargo install --locked --version "$arg" greentic-extension-sdk-cli
         else
           cargo install --locked greentic-extension-sdk-cli
         fi
