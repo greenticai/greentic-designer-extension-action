@@ -123,6 +123,15 @@ runs:
     - name: Install cargo-component
       if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        # Run installs in a directory free of rust-toolchain.toml — the
+        # consumer repo may pin an older Rust (e.g. provider-extensions
+        # pins 1.94.0 for its WASM components), but the host-side toolchain
+        # we install gtdx + cargo-component with needs to match the action's
+        # rust-toolchain input (default 1.95) which is what's compatible
+        # with the SDK crates' rust-version field.
+        RUSTUP_TOOLCHAIN: ${{ inputs.rust-toolchain }}
+      working-directory: ${{ runner.temp }}
       run: |
         set -euo pipefail
         if [ -n "${{ inputs.cargo-component-version }}" ]; then
@@ -136,6 +145,9 @@ runs:
       shell: bash
       env:
         GTDX_VERSION: ${{ inputs.gtdx-version }}
+        # See comment in `Install cargo-component` step.
+        RUSTUP_TOOLCHAIN: ${{ inputs.rust-toolchain }}
+      working-directory: ${{ runner.temp }}
       run: |
         set -euo pipefail
         # `cargo install --version` rejects bare partial versions like "0.4"
