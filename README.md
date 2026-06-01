@@ -38,6 +38,12 @@ and pushes via gtdx.
 
 **Prerequisite:** add `GREENTIC_STORE_TOKEN` as a repo secret.
 
+> ⚠️ **Use `https://` for the Store server.** The example above uses a plain
+> `http://` endpoint for convenience; over plaintext HTTP your bearer token
+> traverses the network unencrypted and can be intercepted. The action emits a
+> warning when `store-url` is `http://` and a token is set — prefer an `https://`
+> Store URL in any environment you don't fully control.
+
 The Store server issues two bearer token types:
 
 | Type | Format | Lifetime | Use for |
@@ -96,14 +102,14 @@ as long as the job has `permissions: packages: write`.
 |-------|----------|---------|-------------|
 | `registry` | conditional | — | Target registry URI. `oci://...`, `file://...`, `local`, or a named Store entry. Optional when `store-url` is set. |
 | `store-url` | no | — | Shorthand: Greentic Store HTTP URL. Action auto-writes `~/.greentic/config.toml`. |
-| `store-token` | no | — | JWT bearer for the Store in `store-url`. Action writes `~/.greentic/credentials.toml` mode 0600. |
+| `store-token` | no | — | Bearer for the Store in `store-url` — either a long-lived API token (`gts_...`, recommended for CI) or a 24h JWT. Action writes `~/.greentic/credentials.toml` mode 0600. |
 | `manifest` | no | `./Cargo.toml` | Path to the extension project's `Cargo.toml`. |
 | `version` | no | *(from describe.json)* | Override `describe.json` version — useful when tags drive CI. |
 | `force` | no | `false` | Overwrite an existing version in the target registry. |
 | `dry-run` | no | `false` | Validate + build + pack but skip the registry write. Useful for PR checks. |
 | `oci-token` | no | *(`GITHUB_TOKEN`)* | Bearer/PAT for `oci://` registries. Action falls back to `GITHUB_TOKEN` automatically. |
 | `format` | no | `human` | `human` or `json` output format. |
-| `gtdx-version` | no | *(latest 0.4.x)* | Version constraint for `greentic-extension-sdk-cli` on crates.io (e.g. `0.4` or `=0.4.2`). |
+| `gtdx-version` | no | *(latest release)* | Version constraint for `greentic-extension-sdk-cli` on crates.io (e.g. `1.2` or `=1.2.3`). |
 | `rust-toolchain` | no | `1.95` | Rust toolchain (>= 1.95 for edition 2024). |
 | `cargo-component-version` | no | *(latest)* | `cargo-component` version pin. |
 
@@ -166,11 +172,14 @@ jobs:
 
 Under the hood this action:
 
-1. Installs the requested Rust toolchain + `wasm32-wasip2` target (`dtolnay/rust-toolchain@master`).
-2. Caches `~/.cargo/bin` keyed on the action inputs, so `cargo install` only runs on the first run (or when inputs change).
+1. Installs the requested Rust toolchain + `wasm32-wasip2` target (`dtolnay/rust-toolchain`, pinned to a commit SHA).
+2. Resolves the effective `gtdx` / `cargo-component` versions (the latest on crates.io when you don't pin one) and caches `~/.cargo/bin` keyed on them, so `cargo install` only runs on the first run, when you change an input, or when a newer version is published.
 3. Installs `cargo-component` and `gtdx` from crates.io (`greentic-extension-sdk-cli`, which ships the `gtdx` binary).
 4. Runs `gtdx publish` with your inputs forwarded as flags.
-5. Parses the JSON receipt written to `./dist/publish-*.json` and exposes `sha256` / `registry-url` / `ext-id` / `version` as action outputs.
+5. Parses the JSON receipt (from `--format json` stdout, or `./dist/publish-*.json`) with `jq` and exposes `sha256` / `registry-url` / `ext-id` / `version` as action outputs.
+
+> **Runner requirement:** the receipt-parsing step uses `jq`, which is preinstalled
+> on GitHub-hosted `ubuntu-latest`. On a minimal or self-hosted runner, install `jq` first.
 
 ## Versioning
 

@@ -9,13 +9,14 @@ on:
 
 jobs:
   dry-run-local:
-    name: Scaffold + dry-run publish to local
+    name: Scaffold + dry-run publish to local (json)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        # Pinned to a commit SHA (master @ 2026-03-27); see action.yml.
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: '1.95'
           targets: wasm32-wasip2
@@ -39,3 +40,50 @@ jobs:
           manifest: ./testext/Cargo.toml
           dry-run: 'true'
           format: json
+
+  publish-file-human:
+    # Exercises the paths the json/dry-run job doesn't: a real (non-dry-run)
+    # write to a file:// registry, the human-format receipt-*file* fallback
+    # parser, and the v-prefix version normalization. Asserts outputs land.
+    name: Scaffold + real publish to file:// (human, v-prefix)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: '1.95'
+          targets: wasm32-wasip2
+
+      - name: Install gtdx (for scaffolding in the test)
+        run: |
+          cargo install --locked greentic-extension-sdk-cli
+
+      - name: Scaffold a design extension
+        run: |
+          gtdx new testext2 \
+            --id com.test.filepublish \
+            --author tester \
+            --dir ./testext2 \
+            -y --no-git
+
+      - name: Publish to a file:// registry via this action
+        id: pub
+        uses: ./
+        with:
+          registry: file://${{ runner.temp }}/reg
+          manifest: ./testext2/Cargo.toml
+          version: v9.9.9
+          format: human
+
+      - name: Assert outputs populated and v-prefix stripped
+        env:
+          OUT_SHA: ${{ steps.pub.outputs.sha256 }}
+          OUT_VER: ${{ steps.pub.outputs.version }}
+          OUT_EXT: ${{ steps.pub.outputs.ext-id }}
+        run: |
+          set -euo pipefail
+          echo "sha256=$OUT_SHA ext-id=$OUT_EXT version=$OUT_VER"
+          test -n "$OUT_SHA"          || { echo "::error::sha256 output was empty"; exit 1; }
+          test "$OUT_VER" = "9.9.9"   || { echo "::error::version not v-stripped: '$OUT_VER'"; exit 1; }
