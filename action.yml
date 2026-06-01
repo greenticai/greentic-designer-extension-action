@@ -313,37 +313,39 @@ runs:
           args+=(--oci-token "$OCI_TOKEN_IN")
         fi
 
-        # Run gtdx publish and capture its output for parseable receipt access.
+        # Run gtdx publish and capture stdout for output extraction. Parse from
+        # stdout (not the ./dist receipt file): the receipt file carries only
+        # sha256/registry, while ext_id + version live solely in gtdx's stdout —
+        # which surfaces all four in both --format json and --format human.
         gtdx "${args[@]}" | tee gtdx-publish.stdout
 
-        # 1. --format json: stdout is a single JSON object.
+        sha=""; url=""; ext_id=""; ver=""
         if [ "$FORMAT" = "json" ]; then
-          RECEIPT=$(grep -m1 '^{' gtdx-publish.stdout || true)
-        fi
-        # 2. Human format: gtdx prints the receipt's own path (`receipt: <path>`).
-        #    Read it directly rather than guessing the dist directory — gtdx
-        #    writes dist relative to the working dir, not the manifest dir.
-        if [ -z "${RECEIPT:-}" ]; then
-          rpath=$(sed -E 's/\x1b\[[0-9;]*m//g' gtdx-publish.stdout \
-                  | sed -nE 's/^[[:space:]]*receipt:[[:space:]]*(.+[^[:space:]])[[:space:]]*$/\1/p' \
-                  | head -1)
-          if [ -n "$rpath" ] && [ -f "$rpath" ]; then
-            RECEIPT=$(cat "$rpath")
+          # One compact JSON object per publish (event=published|dry_run|verify_only).
+          line=$(grep -m1 '"event"' gtdx-publish.stdout || true)
+          if [ -n "$line" ]; then
+            sha=$(printf '%s' "$line"    | jq -r '.sha256 // empty')
+            url=$(printf '%s' "$line"    | jq -r '.registry_url // .registry // empty')
+            ext_id=$(printf '%s' "$line" | jq -r '.ext_id // empty')
+            ver=$(printf '%s' "$line"    | jq -r '.version // empty')
           fi
-        fi
-        # 3. Backstop: newest receipt file across the likely dist directories
-        #    (working-dir ./dist and the manifest project's dist).
-        if [ -z "${RECEIPT:-}" ]; then
-          RECEIPT=$(find "./dist" "$(dirname "$MANIFEST")/dist" -name 'publish-*.json' -print0 2>/dev/null \
-                    | xargs -0 -r ls -t 2>/dev/null | head -1 | xargs -r cat)
+        else
+          # Human format. Strip ANSI, then read the labelled lines:
+          #   ✓ published <ext_id>@<version>
+          #     sha256:   <sha>
+          #     registry: <registry_url>
+          clean=$(sed -E 's/\x1b\[[0-9;]*m//g' gtdx-publish.stdout)
+          pub=$(printf '%s\n' "$clean" | grep -m1 'published ' || true)
+          if [ -n "$pub" ]; then
+            pub="${pub##*published }"   # -> "<ext_id>@<version>"
+            ext_id="${pub%@*}"
+            ver="${pub##*@}"
+          fi
+          sha=$(printf '%s\n' "$clean" | sed -nE 's/^[[:space:]]*sha256:[[:space:]]*([0-9a-fA-F]+).*/\1/p' | head -1)
+          url=$(printf '%s\n' "$clean" | sed -nE 's/^[[:space:]]*registry:[[:space:]]*(.+[^[:space:]])[[:space:]]*$/\1/p' | head -1)
         fi
 
-        sha=""
-        if [ -n "${RECEIPT:-}" ]; then
-          sha=$(echo "$RECEIPT" | jq -r '.sha256 // empty')
-          url=$(echo "$RECEIPT" | jq -r '.registry // .registry_url // empty')
-          ext_id=$(echo "$RECEIPT" | jq -r '.ext_id // empty')
-          ver=$(echo "$RECEIPT" | jq -r '.version // empty')
+        if [ -n "$sha$url$ext_id$ver" ]; then
           {
             echo "sha256=$sha"
             echo "registry-url=$url"
@@ -353,8 +355,8 @@ runs:
         fi
 
         # Don't silently emit empty outputs: gtdx exited 0 (pipefail would have
-        # failed the step otherwise), so a missing receipt means the parse — not
+        # failed the step otherwise), so an empty sha means stdout parsing — not
         # the publish — failed. Surface it for any real (non-dry-run) publish.
         if [ -z "$sha" ] && [ "$DRY_RUN" != "true" ]; then
-          echo "::warning::gtdx publish succeeded but no receipt was parsed; outputs (sha256/registry-url/ext-id/version) will be empty. Check the gtdx output format and ./dist/publish-*.json."
+          echo "::warning::gtdx publish succeeded but its output could not be parsed; outputs (sha256/registry-url/ext-id/version) will be empty. The gtdx '$FORMAT' output format may have changed."
         fi

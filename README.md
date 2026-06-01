@@ -176,10 +176,11 @@ Under the hood this action:
 2. Resolves the effective `gtdx` / `cargo-component` versions (the latest on crates.io when you don't pin one) and caches `~/.cargo/bin` keyed on them, so `cargo install` only runs on the first run, when you change an input, or when a newer version is published.
 3. Installs `cargo-component` and `gtdx` from crates.io (`greentic-extension-sdk-cli`, which ships the `gtdx` binary).
 4. Runs `gtdx publish` with your inputs forwarded as flags.
-5. Parses the JSON receipt (from `--format json` stdout, or `./dist/publish-*.json`) with `jq` and exposes `sha256` / `registry-url` / `ext-id` / `version` as action outputs.
+5. Parses `gtdx publish`'s stdout — the one-line JSON object (`--format json`) or the labelled human output — and exposes `sha256` / `registry-url` / `ext-id` / `version` as action outputs.
 
-> **Runner requirement:** the receipt-parsing step uses `jq`, which is preinstalled
-> on GitHub-hosted `ubuntu-latest`. On a minimal or self-hosted runner, install `jq` first.
+> **Runner requirement:** parsing `--format json` output uses `jq`, which is preinstalled
+> on GitHub-hosted `ubuntu-latest`. On a minimal or self-hosted runner, install `jq` first
+> (the default `human` format does not need it).
 
 ## Versioning
 
