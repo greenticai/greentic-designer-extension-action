@@ -140,7 +140,7 @@ runs:
           cargo install --locked cargo-component
         fi
 
-    - name: Install gtdx from crates.io
+    - name: Install gtdx
       if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
       shell: bash
       env:
@@ -150,19 +150,37 @@ runs:
       working-directory: ${{ runner.temp }}
       run: |
         set -euo pipefail
-        # `cargo install --version` rejects bare partial versions like "0.4"
-        # ("unexpected end of input while parsing minor version number"). It
-        # accepts SemVer range syntax (^0.4, >=0.4, =0.4.2). Auto-prefix `^`
-        # for bare partials so callers can write `gtdx-version: "0.4"` and
-        # get the latest 0.4.x as expected.
+        # Research-channel SDK releases (e.g. `=1.2.4-research`) are
+        # intentionally NOT published to crates.io — the SDK repo only
+        # ships GitHub Releases + source tags for in-progress integration
+        # builds (see SDK release.yml `if: !contains(github.ref_name,
+        # "research")`). Install those from the source git tag instead so
+        # consumers can pin pre-release SDKs that carry security
+        # hardening (audit C2/H7 etc.) ahead of the next stable cut.
+        #
+        # Stable channel pins go through crates.io as before. `cargo
+        # install --version` rejects bare partial versions like "0.4"
+        # ("unexpected end of input while parsing minor version number"),
+        # so we auto-prefix `^` for bare partials.
         if [ -n "$GTDX_VERSION" ]; then
           arg="$GTDX_VERSION"
           case "$arg" in
             \^*|=*|\>*|\<*|~*) ;;  # already has a range qualifier
             *) arg="^${arg}" ;;
           esac
-          echo "==> cargo install --locked --version '$arg' greentic-extension-sdk-cli"
-          cargo install --locked --version "$arg" greentic-extension-sdk-cli
+          # Strip a leading `=` for git-tag lookups: `=1.2.4-research` →
+          # `v1.2.4-research`. Other range qualifiers are crates.io-only
+          # and don't make sense against a single tag.
+          if [[ "$arg" == *research* ]]; then
+            bare="${arg#=}"
+            tag="v${bare}"
+            echo "==> research channel detected; installing gtdx from git tag '$tag'"
+            cargo install --locked --git https://github.com/greenticai/greentic-designer-sdk \
+              --tag "$tag" greentic-extension-sdk-cli
+          else
+            echo "==> cargo install --locked --version '$arg' greentic-extension-sdk-cli"
+            cargo install --locked --version "$arg" greentic-extension-sdk-cli
+          fi
         else
           cargo install --locked greentic-extension-sdk-cli
         fi
