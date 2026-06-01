@@ -314,18 +314,28 @@ runs:
         fi
 
         # Run gtdx publish and capture its output for parseable receipt access.
-        # When --format json is set, stdout is a single JSON object; otherwise
-        # we fall back to reading the receipt file that gtdx writes to ./dist/.
         gtdx "${args[@]}" | tee gtdx-publish.stdout
 
-        # Prefer stdout JSON when --format json was used.
+        # 1. --format json: stdout is a single JSON object.
         if [ "$FORMAT" = "json" ]; then
           RECEIPT=$(grep -m1 '^{' gtdx-publish.stdout || true)
         fi
-        # Otherwise pick the most recent receipt file written by gtdx.
+        # 2. Human format: gtdx prints the receipt's own path (`receipt: <path>`).
+        #    Read it directly rather than guessing the dist directory — gtdx
+        #    writes dist relative to the working dir, not the manifest dir.
         if [ -z "${RECEIPT:-}" ]; then
-          RECEIPT=$(find "$(dirname "$MANIFEST")/dist" -name 'publish-*.json' -print0 2>/dev/null \
-                    | xargs -0 -r ls -t | head -1 | xargs -r cat)
+          rpath=$(sed -E 's/\x1b\[[0-9;]*m//g' gtdx-publish.stdout \
+                  | sed -nE 's/^[[:space:]]*receipt:[[:space:]]*(.+[^[:space:]])[[:space:]]*$/\1/p' \
+                  | head -1)
+          if [ -n "$rpath" ] && [ -f "$rpath" ]; then
+            RECEIPT=$(cat "$rpath")
+          fi
+        fi
+        # 3. Backstop: newest receipt file across the likely dist directories
+        #    (working-dir ./dist and the manifest project's dist).
+        if [ -z "${RECEIPT:-}" ]; then
+          RECEIPT=$(find "./dist" "$(dirname "$MANIFEST")/dist" -name 'publish-*.json' -print0 2>/dev/null \
+                    | xargs -0 -r ls -t 2>/dev/null | head -1 | xargs -r cat)
         fi
 
         sha=""
