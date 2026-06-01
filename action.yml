@@ -75,7 +75,7 @@ inputs:
   gtdx-version:
     description: |
       Version constraint for `greentic-extension-sdk-cli` on crates.io
-      (e.g. "0.4" or "=0.4.2"). Defaults to the latest published 0.4.x.
+      (e.g. "1.2" or "=1.2.3"). Defaults to the latest published release.
       The installed binary is `gtdx`.
     required: false
     default: ''
@@ -108,17 +108,49 @@ runs:
   using: 'composite'
   steps:
     - name: Setup Rust toolchain
-      uses: dtolnay/rust-toolchain@master
+      # Pinned to a commit SHA for supply-chain safety. dtolnay/rust-toolchain
+      # uses branch refs (master/stable/<version>) rather than version tags, so
+      # this is master @ 2026-03-27. Dependabot keeps the pin moving.
+      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
       with:
         toolchain: ${{ inputs.rust-toolchain }}
         targets: wasm32-wasip2
+
+    - name: Resolve install versions
+      id: versions
+      shell: bash
+      env:
+        IN_GTDX: ${{ inputs.gtdx-version }}
+        IN_CC: ${{ inputs.cargo-component-version }}
+      run: |
+        set -euo pipefail
+        # When a version input is empty we install "latest". A constant cache
+        # key would then freeze whatever was latest on the first run and never
+        # pick up newer releases until the 7-day cache eviction. Resolve the
+        # real latest from crates.io so the key moves when upstream publishes —
+        # keeping the documented "latest" promise honest.
+        # Anchored match prints only the crate's version line (the trailing
+        # "...use --limit..." note has no `= "..."`), so no `head`/SIGPIPE dance.
+        latest() {
+          cargo search "$1" --limit 1 | sed -nE 's/^[^ ]+ = "([^"]+)".*/\1/p'
+        }
+        if [ -n "$IN_GTDX" ]; then
+          echo "gtdx-key=pin-${IN_GTDX}" >> "$GITHUB_OUTPUT"
+        else
+          echo "gtdx-key=latest-$(latest greentic-extension-sdk-cli)" >> "$GITHUB_OUTPUT"
+        fi
+        if [ -n "$IN_CC" ]; then
+          echo "cc-key=pin-${IN_CC}" >> "$GITHUB_OUTPUT"
+        else
+          echo "cc-key=latest-$(latest cargo-component)" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Cache cargo-installed binaries
       id: cache-cargo-bin
       uses: actions/cache@v4
       with:
         path: ~/.cargo/bin
-        key: gtdx-cargo-bin-${{ runner.os }}-rust${{ inputs.rust-toolchain }}-ver${{ inputs.gtdx-version }}-cc${{ inputs.cargo-component-version }}-v2
+        key: gtdx-cargo-bin-${{ runner.os }}-rust${{ inputs.rust-toolchain }}-${{ steps.versions.outputs.gtdx-key }}-${{ steps.versions.outputs.cc-key }}-v3
 
     - name: Install cargo-component
       if: steps.cache-cargo-bin.outputs.cache-hit != 'true'
@@ -131,11 +163,14 @@ runs:
         # rust-toolchain input (default 1.95) which is what's compatible
         # with the SDK crates' rust-version field.
         RUSTUP_TOOLCHAIN: ${{ inputs.rust-toolchain }}
+        # Pass inputs via env (not `${{ }}` spliced into the script) so a value
+        # carrying shell metacharacters can't break out of the command.
+        CC_VERSION: ${{ inputs.cargo-component-version }}
       working-directory: ${{ runner.temp }}
       run: |
         set -euo pipefail
-        if [ -n "${{ inputs.cargo-component-version }}" ]; then
-          cargo install --locked --version "${{ inputs.cargo-component-version }}" cargo-component
+        if [ -n "$CC_VERSION" ]; then
+          cargo install --locked --version "$CC_VERSION" cargo-component
         else
           cargo install --locked cargo-component
         fi
@@ -182,6 +217,15 @@ runs:
         STORE_TOKEN: ${{ inputs.store-token }}
       run: |
         set -euo pipefail
+        # A bearer token over plaintext http:// traverses the network
+        # unencrypted and is interceptable. Warn loudly; prefer https://.
+        case "$STORE_URL" in
+          http://*)
+            if [ -n "$STORE_TOKEN" ]; then
+              echo "::warning::store-url uses plaintext http://; the store-token will be sent unencrypted. Use https:// for the Store server."
+            fi
+            ;;
+        esac
         mkdir -p "$HOME/.greentic"
         cat > "$HOME/.greentic/config.toml" <<EOF
         [default]
@@ -224,56 +268,95 @@ runs:
       id: publish
       shell: bash
       env:
-        # The action defaults gtdx's oci-token lookup chain to:
-        # --oci-token (explicit) -> GHCR_TOKEN -> GITHUB_TOKEN -> OCI_TOKEN -> anonymous.
-        # In GitHub Actions we wire GITHUB_TOKEN automatically so `permissions:
-        # packages: write` + no extra config is enough.
+        # All caller-controlled inputs are passed via env (not `${{ }}` spliced
+        # into the script) so a value carrying shell metacharacters — e.g. a
+        # crafted git ref reaching `version` — cannot break out of the command.
+        REGISTRY: ${{ steps.resolve-registry.outputs.registry }}
+        MANIFEST: ${{ inputs.manifest }}
+        FORMAT: ${{ inputs.format }}
+        VERSION: ${{ inputs.version }}
+        FORCE: ${{ inputs.force }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        OCI_TOKEN_IN: ${{ inputs.oci-token }}
+        # gtdx's oci-token lookup chain is:
+        #   --oci-token (explicit) -> GHCR_TOKEN -> GITHUB_TOKEN -> OCI_TOKEN -> anonymous.
+        # We wire GITHUB_TOKEN automatically so in GitHub Actions `permissions:
+        # packages: write` alone is enough. When the caller passes oci-token we
+        # *also* forward it as the explicit --oci-token flag below; the flag
+        # wins, this env is just the fallback link in the chain.
         GITHUB_TOKEN: ${{ inputs.oci-token != '' && inputs.oci-token || github.token }}
       run: |
         set -euo pipefail
 
-        args=(publish
-          --registry "${{ steps.resolve-registry.outputs.registry }}"
-          --manifest "${{ inputs.manifest }}"
-          --format   "${{ inputs.format }}"
-        )
-        if [ -n "${{ inputs.version }}" ]; then
-          args+=(--version "${{ inputs.version }}")
+        # Normalize a leading `v` so callers can forward a git tag ref
+        # (e.g. a `v1.2.3` tag) straight into `version` and publish `1.2.3`.
+        # Only strips `v` when followed by a digit.
+        if [[ "$VERSION" =~ ^v[0-9] ]]; then
+          VERSION="${VERSION#v}"
         fi
-        if [ "${{ inputs.force }}" = "true" ]; then
+
+        args=(publish
+          --registry "$REGISTRY"
+          --manifest "$MANIFEST"
+          --format   "$FORMAT"
+        )
+        if [ -n "$VERSION" ]; then
+          args+=(--version "$VERSION")
+        fi
+        if [ "$FORCE" = "true" ]; then
           args+=(--force)
         fi
-        if [ "${{ inputs.dry-run }}" = "true" ]; then
+        if [ "$DRY_RUN" = "true" ]; then
           args+=(--dry-run)
         fi
-        if [ -n "${{ inputs.oci-token }}" ]; then
-          args+=(--oci-token "${{ inputs.oci-token }}")
+        if [ -n "$OCI_TOKEN_IN" ]; then
+          args+=(--oci-token "$OCI_TOKEN_IN")
         fi
 
-        # Run gtdx publish and capture its output for parseable receipt access.
-        # When --format json is set, stdout is a single JSON object; otherwise
-        # we fall back to reading the receipt file that gtdx writes to ./dist/.
+        # Run gtdx publish and capture stdout for output extraction. Parse from
+        # stdout (not the ./dist receipt file): the receipt file carries only
+        # sha256/registry, while ext_id + version live solely in gtdx's stdout —
+        # which surfaces all four in both --format json and --format human.
         gtdx "${args[@]}" | tee gtdx-publish.stdout
 
-        # Prefer stdout JSON when --format json was used.
-        if [ "${{ inputs.format }}" = "json" ]; then
-          RECEIPT=$(grep -m1 '^{' gtdx-publish.stdout || true)
-        fi
-        # Otherwise pick the most recent receipt file written by gtdx.
-        if [ -z "${RECEIPT:-}" ]; then
-          RECEIPT=$(find "$(dirname "${{ inputs.manifest }}")/dist" -name 'publish-*.json' -print0 2>/dev/null \
-                    | xargs -0 -r ls -t | head -1 | xargs -r cat)
+        sha=""; url=""; ext_id=""; ver=""
+        if [ "$FORMAT" = "json" ]; then
+          # One compact JSON object per publish (event=published|dry_run|verify_only).
+          line=$(grep -m1 '"event"' gtdx-publish.stdout || true)
+          if [ -n "$line" ]; then
+            sha=$(printf '%s' "$line"    | jq -r '.sha256 // empty')
+            url=$(printf '%s' "$line"    | jq -r '.registry_url // .registry // empty')
+            ext_id=$(printf '%s' "$line" | jq -r '.ext_id // empty')
+            ver=$(printf '%s' "$line"    | jq -r '.version // empty')
+          fi
+        else
+          # Human format. Strip ANSI, then read the labelled lines:
+          #   ✓ published <ext_id>@<version>
+          #     sha256:   <sha>
+          #     registry: <registry_url>
+          clean=$(sed -E 's/\x1b\[[0-9;]*m//g' gtdx-publish.stdout)
+          pub=$(printf '%s\n' "$clean" | grep -m1 'published ' || true)
+          if [ -n "$pub" ]; then
+            pub="${pub##*published }"   # -> "<ext_id>@<version>"
+            ext_id="${pub%@*}"
+            ver="${pub##*@}"
+          fi
+          sha=$(printf '%s\n' "$clean" | sed -nE 's/^[[:space:]]*sha256:[[:space:]]*([0-9a-fA-F]+).*/\1/p' | head -1)
+          url=$(printf '%s\n' "$clean" | sed -nE 's/^[[:space:]]*registry:[[:space:]]*(.+[^[:space:]])[[:space:]]*$/\1/p' | head -1)
         fi
 
-        if [ -n "${RECEIPT:-}" ]; then
-          sha=$(echo "$RECEIPT" | jq -r '.sha256 // empty')
-          url=$(echo "$RECEIPT" | jq -r '.registry // .registry_url // empty')
-          ext_id=$(echo "$RECEIPT" | jq -r '.ext_id // empty')
-          ver=$(echo "$RECEIPT" | jq -r '.version // empty')
+        if [ -n "$sha$url$ext_id$ver" ]; then
           {
             echo "sha256=$sha"
             echo "registry-url=$url"
             echo "ext-id=$ext_id"
             echo "version=$ver"
           } >> "$GITHUB_OUTPUT"
+        fi
+
+        # Don't silently emit empty outputs: gtdx exited 0 (pipefail would have
+        # failed the step otherwise), so an empty sha means stdout parsing — not
+        # the publish — failed. Surface it for any real (non-dry-run) publish.
+        if [ -z "$sha" ] && [ "$DRY_RUN" != "true" ]; then
+          echo "::warning::gtdx publish succeeded but its output could not be parsed; outputs (sha256/registry-url/ext-id/version) will be empty. The gtdx '$FORMAT' output format may have changed."
         fi
