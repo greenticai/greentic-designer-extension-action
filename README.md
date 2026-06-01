@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: greenticai/greentic-designer-extension-action@v1
+      - uses: greenticai/greentic-designer-extension-action@v2
         with:
           store-url: http://62.171.174.152:3030
           store-token: ${{ secrets.GREENTIC_STORE_TOKEN }}
@@ -87,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: greenticai/greentic-designer-extension-action@v1
+      - uses: greenticai/greentic-designer-extension-action@v2
         with:
           registry: oci://ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
           version: ${{ github.ref_name }}
@@ -125,7 +125,7 @@ as long as the job has `permissions: packages: write`.
 Example of consuming outputs:
 
 ```yaml
-      - uses: greenticai/greentic-designer-extension-action@v1
+      - uses: greenticai/greentic-designer-extension-action@v2
         id: publish
         with:
           registry: oci://ghcr.io/${{ github.repository_owner }}/my-ext
@@ -153,7 +153,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: greenticai/greentic-designer-extension-action@v1
+      - uses: greenticai/greentic-designer-extension-action@v2
         with:
           registry: local
           dry-run: 'true'
@@ -162,7 +162,7 @@ jobs:
 ## Example — publish to a private Store server
 
 ```yaml
-      - uses: greenticai/greentic-designer-extension-action@v1
+      - uses: greenticai/greentic-designer-extension-action@v2
         with:
           store-url: https://my-private-store.example.com
           store-token: ${{ secrets.STORE_TOKEN }}
@@ -184,9 +184,10 @@ Under the hood this action:
 
 ## Versioning
 
-This action follows semantic versioning. Pin to a major tag (`@v1`) for
-automatic non-breaking updates or to a specific release (`@v1.0.0`) for
-deterministic builds.
+This action follows semantic versioning. Pin to the current major tag (`@v2`)
+for automatic non-breaking updates or to a specific release (`@v2.1.0`) for
+deterministic builds. The older `@v1` line predates the crates.io install and
+is no longer maintained — migrate to `@v2`.
 
 ## License
 
