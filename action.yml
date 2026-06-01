@@ -74,9 +74,10 @@ inputs:
 
   gtdx-version:
     description: |
-      Version constraint for `greentic-extension-sdk-cli` on crates.io
-      (e.g. "1.2" or "=1.2.3"). Defaults to the latest published release.
-      The installed binary is `gtdx`.
+      Version constraint for `greentic-extension-sdk-cli` (the `gtdx` binary).
+      Stable pins resolve from crates.io (e.g. "1.2" or "=1.2.3"); a `-research`
+      pin (e.g. "=1.2.4-research") installs from the SDK git tag, since research
+      builds are not published to crates.io. Defaults to the latest crates.io release.
     required: false
     default: ''
 
@@ -147,7 +148,7 @@ runs:
 
     - name: Cache cargo-installed binaries
       id: cache-cargo-bin
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/bin
         key: gtdx-cargo-bin-${{ runner.os }}-rust${{ inputs.rust-toolchain }}-${{ steps.versions.outputs.gtdx-key }}-${{ steps.versions.outputs.cc-key }}-v3

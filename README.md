@@ -109,7 +109,7 @@ as long as the job has `permissions: packages: write`.
 | `dry-run` | no | `false` | Validate + build + pack but skip the registry write. Useful for PR checks. |
 | `oci-token` | no | *(`GITHUB_TOKEN`)* | Bearer/PAT for `oci://` registries. Action falls back to `GITHUB_TOKEN` automatically. |
 | `format` | no | `human` | `human` or `json` output format. |
-| `gtdx-version` | no | *(latest release)* | Version constraint for `greentic-extension-sdk-cli` on crates.io (e.g. `1.2` or `=1.2.3`). |
+| `gtdx-version` | no | *(latest release)* | Version constraint for `greentic-extension-sdk-cli` (e.g. `1.2` or `=1.2.3`). Stable pins come from crates.io; a `-research` pin (e.g. `=1.2.4-research`) installs from the SDK git tag. |
 | `rust-toolchain` | no | `1.95` | Rust toolchain (>= 1.95 for edition 2024). |
 | `cargo-component-version` | no | *(latest)* | `cargo-component` version pin. |
 
@@ -174,7 +174,7 @@ Under the hood this action:
 
 1. Installs the requested Rust toolchain + `wasm32-wasip2` target (`dtolnay/rust-toolchain`, pinned to a commit SHA).
 2. Resolves the effective `gtdx` / `cargo-component` versions (the latest on crates.io when you don't pin one) and caches `~/.cargo/bin` keyed on them, so `cargo install` only runs on the first run, when you change an input, or when a newer version is published.
-3. Installs `cargo-component` and `gtdx` from crates.io (`greentic-extension-sdk-cli`, which ships the `gtdx` binary).
+3. Installs `cargo-component` and `gtdx` (`greentic-extension-sdk-cli`, which ships the `gtdx` binary) from crates.io — except a `-research` `gtdx-version` pin, which installs `gtdx` from the SDK git tag (research builds aren't published to crates.io).
 4. Runs `gtdx publish` with your inputs forwarded as flags.
 5. Parses `gtdx publish`'s stdout — the one-line JSON object (`--format json`) or the labelled human output — and exposes `sha256` / `registry-url` / `ext-id` / `version` as action outputs.
 
