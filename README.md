@@ -28,7 +28,7 @@ jobs:
 
       - uses: greenticai/greentic-designer-extension-action@v2
         with:
-          store-url: http://62.171.174.152:3030
+          store-url: https://store.greentic.cloud
           store-token: ${{ secrets.GREENTIC_STORE_TOKEN }}
           version: ${{ github.ref_name }}
 ```
@@ -38,11 +38,10 @@ and pushes via gtdx.
 
 **Prerequisite:** add `GREENTIC_STORE_TOKEN` as a repo secret.
 
-> ⚠️ **Use `https://` for the Store server.** The example above uses a plain
-> `http://` endpoint for convenience; over plaintext HTTP your bearer token
-> traverses the network unencrypted and can be intercepted. The action emits a
-> warning when `store-url` is `http://` and a token is set — prefer an `https://`
-> Store URL in any environment you don't fully control.
+> ⚠️ **Use `https://` for the Store server.** Over plaintext `http://` your
+> bearer token traverses the network unencrypted and can be intercepted. The
+> action emits a warning when `store-url` is `http://` and a token is set —
+> prefer an `https://` Store URL in any environment you don't fully control.
 
 The Store server issues two bearer token types:
 
@@ -59,7 +58,7 @@ into the repo secret.
 If you only have a JWT (for testing / first-time setup):
 
 ```bash
-curl -X POST http://62.171.174.152:3030/api/v1/auth/register \
+curl -X POST https://store.greentic.cloud/api/v1/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"name":"your name","handle":"yourhandle","email":"you@example.com","password":"<pw>"}'
 # response has a "token" field (JWT, 24h) and "publisher.allowed_prefixes".

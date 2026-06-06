@@ -24,7 +24,7 @@ inputs:
       Shorthand for Greentic Store HTTP push. When set, the action writes
       ~/.greentic/config.toml with a registry entry named "greentic-store"
       pointing at this URL, and auto-selects it unless `registry` overrides.
-      Example: http://62.171.174.152:3030
+      Example: https://store.greentic.cloud
     required: false
     default: ''
 
