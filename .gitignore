@@ -4,3 +4,7 @@ dist/
 
 # Local git worktrees (developer-only, never part of the action)
 .worktrees/
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
