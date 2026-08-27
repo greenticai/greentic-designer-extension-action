@@ -91,6 +91,54 @@ inputs:
     required: false
     default: ''
 
+  signing-key-pem:
+    description: |
+      Ed25519 signing key, PKCS8 PEM — exactly what `gtdx keygen` emits. Pass a
+      repository/organization secret, never a literal.
+
+      With a key the action runs `gtdx publish --sign`, so the `describe.json`
+      *inside* the produced .gtxpack carries a `signature` object.
+      greentic-ext-runtime refuses to load an extension whose describe.json has
+      no signature ("signature verification failed: missing signature field"),
+      so an unsigned publish reaches the Store and is then rejected at every
+      tenant's boot — visible only as a `warn` line. That is why the action
+      fails closed when this input is empty (see `allow-unsigned`).
+
+      The key must be the one already pinned for these extension ids: the
+      runtime anchors the publisher key per extension id on first load (TOFU),
+      and a later publish under a different key is refused as a publisher
+      mismatch. Set `expected-public-key` to have the action assert that.
+    required: false
+    default: ''
+
+  signing-key-id:
+    description: |
+      Optional label recorded as the signature key id in the registry metadata.
+      Restricted to [A-Za-z0-9._-] because it names the on-disk key file.
+      When empty the signature is labelled `env`.
+    required: false
+    default: ''
+
+  expected-public-key:
+    description: |
+      Base64 ed25519 public key the produced artifact must be signed with. When
+      set, the action reads the describe.json back out of the packed .gtxpack
+      and fails if the signature is missing or was made by a different key —
+      catching both an unsigned publish and a publish under the wrong publisher
+      (which the runtime would refuse as a TOFU mismatch).
+    required: false
+    default: ''
+
+  allow-unsigned:
+    description: |
+      Escape hatch for publishing without a signature. Defaults to `false`: the
+      action refuses to publish unsigned rather than shipping an artifact the
+      runtime will reject at load time. Set to `true` only for a registry whose
+      consumers do not verify signatures, and expect the artifact to be
+      unloadable by greentic-ext-runtime.
+    required: false
+    default: 'false'
+
 outputs:
   sha256:
     description: 'SHA-256 of the published .gtxpack (from the JSON receipt).'
@@ -283,6 +331,52 @@ runs:
           echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
         fi
 
+    - name: Resolve signing key
+      id: signing
+      shell: bash
+      env:
+        SIGNING_KEY_PEM: ${{ inputs.signing-key-pem }}
+        SIGNING_KEY_ID: ${{ inputs.signing-key-id }}
+        ALLOW_UNSIGNED: ${{ inputs.allow-unsigned }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "$SIGNING_KEY_PEM" ]; then
+          # Fail closed. An unsigned .gtxpack publishes fine and is then refused
+          # by greentic-ext-runtime at every consumer's boot ("missing signature
+          # field") — a failure that surfaces only as a warn line in their logs,
+          # long after the release looked green here. Better to break the
+          # release than to ship an extension nobody can load.
+          if [ "$ALLOW_UNSIGNED" != "true" ]; then
+            echo "::error::no 'signing-key-pem' supplied. greentic-ext-runtime refuses an extension whose describe.json carries no signature, so this publish would produce an artifact that no host can load. Pass the PKCS8 PEM signing key (e.g. secrets.EXT_SIGNING_KEY_PEM), or set allow-unsigned: true to publish unsigned deliberately."
+            exit 1
+          fi
+          echo "::warning::allow-unsigned is set — publishing an UNSIGNED artifact. greentic-ext-runtime will refuse to load it."
+          echo "sign=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # gtdx reads the PEM from $GREENTIC_EXT_SIGNING_KEY_PEM when neither
+        # --key nor --key-id is given, and labels that signature `env`. A
+        # caller-supplied key id is worth carrying into the registry metadata,
+        # but --key-id makes gtdx load `<home>/keys/<id>.key` from disk with no
+        # env fallback — so materialize the file when (and only when) an id is
+        # requested.
+        if [ -n "$SIGNING_KEY_ID" ]; then
+          if ! printf '%s' "$SIGNING_KEY_ID" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+            echo "::error::signing-key-id must match [A-Za-z0-9._-]+ — it names a file on disk."
+            exit 1
+          fi
+          key_dir="${RUNNER_TEMP}/gtdx-signing-keys"
+          umask 077
+          mkdir -p "$key_dir"
+          printf '%s\n' "$SIGNING_KEY_PEM" > "${key_dir}/${SIGNING_KEY_ID}.key"
+          chmod 0600 "${key_dir}/${SIGNING_KEY_ID}.key"
+          echo "key-path=${key_dir}/${SIGNING_KEY_ID}.key" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "sign=true" >> "$GITHUB_OUTPUT"
+
     - name: Publish
       id: publish
       shell: bash
@@ -297,6 +391,12 @@ runs:
         FORCE: ${{ inputs.force }}
         DRY_RUN: ${{ inputs.dry-run }}
         OCI_TOKEN_IN: ${{ inputs.oci-token }}
+        SIGN: ${{ steps.signing.outputs.sign }}
+        SIGNING_KEY_ID: ${{ inputs.signing-key-id }}
+        SIGNING_KEY_PATH: ${{ steps.signing.outputs.key-path }}
+        # gtdx's default --key-env. Set unconditionally so `--sign` with no
+        # --key/--key-id finds the PEM without it ever reaching a command line.
+        GREENTIC_EXT_SIGNING_KEY_PEM: ${{ inputs.signing-key-pem }}
         # gtdx's oci-token lookup chain is:
         #   --oci-token (explicit) -> GHCR_TOKEN -> GITHUB_TOKEN -> OCI_TOKEN -> anonymous.
         # We wire GITHUB_TOKEN automatically so in GitHub Actions `permissions:
@@ -330,6 +430,14 @@ runs:
         fi
         if [ -n "$OCI_TOKEN_IN" ]; then
           args+=(--oci-token "$OCI_TOKEN_IN")
+        fi
+        if [ "$SIGN" = "true" ]; then
+          # Signs the describe.json *inside* the pack, not just the registry
+          # metadata — that inner signature is what the runtime verifies.
+          args+=(--sign)
+          if [ -n "$SIGNING_KEY_PATH" ]; then
+            args+=(--key "$SIGNING_KEY_PATH" --key-id "$SIGNING_KEY_ID")
+          fi
         fi
 
         # Run gtdx publish and capture stdout for output extraction. Parse from
@@ -379,3 +487,63 @@ runs:
         if [ -z "$sha" ] && [ "$DRY_RUN" != "true" ]; then
           echo "::warning::gtdx publish succeeded but its output could not be parsed; outputs (sha256/registry-url/ext-id/version) will be empty. The gtdx '$FORMAT' output format may have changed."
         fi
+
+    # Read the signature back out of the artifact that was actually produced,
+    # rather than trusting that passing --sign did what it says. A publish that
+    # emits an unsigned describe.json is not a broken build here — it is an
+    # extension every host refuses months later, so this is the step that has to
+    # be certain.
+    - name: Verify the produced artifact is signed
+      if: steps.signing.outputs.sign == 'true'
+      shell: bash
+      env:
+        MANIFEST: ${{ inputs.manifest }}
+        EXPECTED_PUBLIC_KEY: ${{ inputs.expected-public-key }}
+      run: |
+        set -euo pipefail
+
+        # A real publish copies the pack into gtdx's --dist default (./dist,
+        # relative to the workspace). A dry run never reaches that copy, so fall
+        # back to the staging pack gtdx leaves beside the project — same bytes.
+        pack=""
+        for f in dist/*.gtxpack; do
+          [ -e "$f" ] || continue
+          if [ "$(basename "$f")" != "publish-staging.gtxpack" ]; then
+            if [ -z "$pack" ] || [ "$f" -nt "$pack" ]; then
+              pack="$f"
+            fi
+          fi
+        done
+        if [ -z "$pack" ]; then
+          staged="$(dirname "$MANIFEST")/dist/publish-staging.gtxpack"
+          if [ -e "$staged" ]; then
+            pack="$staged"
+          fi
+        fi
+        if [ -z "$pack" ]; then
+          echo "::error::signing was requested but no .gtxpack could be found to verify. Looked in ./dist and next to $MANIFEST."
+          exit 1
+        fi
+        echo "==> verifying $pack"
+
+        describe="${RUNNER_TEMP}/verify-describe.json"
+        unzip -p "$pack" describe.json > "$describe"
+
+        algorithm=$(jq -r '.signature.algorithm // empty' "$describe")
+        public_key=$(jq -r '.signature.publicKey // empty' "$describe")
+        value=$(jq -r '.signature.value // empty' "$describe")
+
+        if [ -z "$public_key" ] || [ -z "$value" ]; then
+          echo "::error::$pack has no signature in its describe.json — greentic-ext-runtime would refuse it with 'missing signature field'. gtdx ran with --sign but produced an unsigned pack."
+          exit 1
+        fi
+
+        if [ -n "$EXPECTED_PUBLIC_KEY" ] && [ "$public_key" != "$EXPECTED_PUBLIC_KEY" ]; then
+          # The runtime pins a publisher key per extension id on first load
+          # (TOFU), so signing a later version under a different key is refused
+          # as a publisher mismatch just as hard as shipping it unsigned.
+          echo "::error::$pack is signed by $public_key but expected-public-key is $EXPECTED_PUBLIC_KEY. Publishing under a different publisher key than the one already pinned for this extension id makes the artifact unloadable."
+          exit 1
+        fi
+
+        echo "✓ signed: algorithm=${algorithm:-<unset>} publicKey=${public_key}"
