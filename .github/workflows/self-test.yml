@@ -33,6 +33,21 @@ jobs:
             --dir ./testext \
             -y --no-git
 
+      - name: Mint an ephemeral signing key
+        id: key
+        run: |
+          set -euo pipefail
+          gtdx keygen --out "${RUNNER_TEMP}/selftest.key" 2> "${RUNNER_TEMP}/keygen.log"
+          cat "${RUNNER_TEMP}/keygen.log"
+          pub=$(sed -nE 's/^public key \(base64\): (.+)$/\1/p' "${RUNNER_TEMP}/keygen.log")
+          test -n "$pub" || { echo "::error::could not read the public key out of gtdx keygen"; exit 1; }
+          {
+            echo "public=$pub"
+            echo 'pem<<SELFTEST_PEM_EOF'
+            cat "${RUNNER_TEMP}/selftest.key"
+            echo 'SELFTEST_PEM_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Dry-run publish via this action
         uses: ./
         with:
@@ -40,6 +55,65 @@ jobs:
           manifest: ./testext/Cargo.toml
           dry-run: 'true'
           format: json
+          signing-key-pem: ${{ steps.key.outputs.pem }}
+          # The action reads the signature back out of the pack it produced and
+          # fails if it is missing or made by another key, so this job would go
+          # red if signing silently stopped working.
+          expected-public-key: ${{ steps.key.outputs.public }}
+
+  refuses-unsigned:
+    # The regression guard for the bug that made signing an input at all: the
+    # action used to publish happily with no key, and greentic-ext-runtime then
+    # refused every one of those artifacts at load time. Publishing unsigned
+    # must stay an explicit choice, never a default.
+    name: Refuses to publish without a signing key
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: '1.95'
+          targets: wasm32-wasip2
+
+      - name: Install gtdx (for scaffolding in the test)
+        run: |
+          cargo install --locked greentic-extension-sdk-cli
+
+      - name: Scaffold a design extension
+        run: |
+          gtdx new testext3 \
+            --id com.test.unsigned \
+            --author tester \
+            --dir ./testext3 \
+            -y --no-git
+
+      - name: Publish with no signing key
+        id: attempt
+        continue-on-error: true
+        uses: ./
+        with:
+          registry: local
+          manifest: ./testext3/Cargo.toml
+          dry-run: 'true'
+
+      - name: Assert it failed closed
+        env:
+          OUTCOME: ${{ steps.attempt.outcome }}
+        run: |
+          set -euo pipefail
+          echo "outcome=$OUTCOME"
+          test "$OUTCOME" = "failure" \
+            || { echo "::error::the action accepted a publish with no signing key"; exit 1; }
+
+      - name: Publish unsigned deliberately
+        uses: ./
+        with:
+          registry: local
+          manifest: ./testext3/Cargo.toml
+          dry-run: 'true'
+          allow-unsigned: 'true'
 
   publish-file-human:
     # Exercises the paths the json/dry-run job doesn't: a real (non-dry-run)
@@ -68,6 +142,21 @@ jobs:
             --dir ./testext2 \
             -y --no-git
 
+      - name: Mint an ephemeral signing key
+        id: key
+        run: |
+          set -euo pipefail
+          gtdx keygen --out "${RUNNER_TEMP}/selftest.key" 2> "${RUNNER_TEMP}/keygen.log"
+          cat "${RUNNER_TEMP}/keygen.log"
+          pub=$(sed -nE 's/^public key \(base64\): (.+)$/\1/p' "${RUNNER_TEMP}/keygen.log")
+          test -n "$pub" || { echo "::error::could not read the public key out of gtdx keygen"; exit 1; }
+          {
+            echo "public=$pub"
+            echo 'pem<<SELFTEST_PEM_EOF'
+            cat "${RUNNER_TEMP}/selftest.key"
+            echo 'SELFTEST_PEM_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publish to a file:// registry via this action
         id: pub
         uses: ./
@@ -76,6 +165,9 @@ jobs:
           manifest: ./testext2/Cargo.toml
           version: v9.9.9
           format: human
+          signing-key-pem: ${{ steps.key.outputs.pem }}
+          signing-key-id: selftest
+          expected-public-key: ${{ steps.key.outputs.public }}
 
       - name: Assert outputs populated and v-prefix stripped
         env:
@@ -87,3 +179,17 @@ jobs:
           echo "sha256=$OUT_SHA ext-id=$OUT_EXT version=$OUT_VER"
           test -n "$OUT_SHA"          || { echo "::error::sha256 output was empty"; exit 1; }
           test "$OUT_VER" = "9.9.9"   || { echo "::error::version not v-stripped: '$OUT_VER'"; exit 1; }
+
+      - name: Assert the artifact that reached the registry is signed
+        env:
+          EXPECTED: ${{ steps.key.outputs.public }}
+        run: |
+          set -euo pipefail
+          # The action verifies the pack it produced; this checks the copy that
+          # actually landed in the registry, which is what a consumer installs.
+          pack=$(find "${RUNNER_TEMP}/reg" -name '*.gtxpack' | head -1)
+          test -n "$pack" || { echo "::error::no .gtxpack in the file:// registry"; exit 1; }
+          got=$(unzip -p "$pack" describe.json | jq -r '.signature.publicKey // empty')
+          test "$got" = "$EXPECTED" \
+            || { echo "::error::registry copy signed by '${got:-<unsigned>}', expected $EXPECTED"; exit 1; }
+          echo "✓ $pack is signed by $got"
