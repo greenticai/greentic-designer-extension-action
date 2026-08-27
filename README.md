@@ -30,13 +30,21 @@ jobs:
         with:
           store-url: https://store.greentic.cloud
           store-token: ${{ secrets.GREENTIC_STORE_TOKEN }}
+          signing-key-pem: ${{ secrets.EXT_SIGNING_KEY_PEM }}
           version: ${{ github.ref_name }}
 ```
 
 That's it. Action writes `~/.greentic/{config,credentials}.toml` internally
 and pushes via gtdx.
 
-**Prerequisite:** add `GREENTIC_STORE_TOKEN` as a repo secret.
+**Prerequisites:** add `GREENTIC_STORE_TOKEN` and `EXT_SIGNING_KEY_PEM` as repo
+secrets.
+
+> ⚠️ **Signing is mandatory by default.** `greentic-ext-runtime` refuses to load
+> an extension whose `describe.json` has no `signature` object — the Store
+> accepts the upload happily, and every consumer then rejects it at boot with a
+> single `warn` line. Without `signing-key-pem` the action fails the job rather
+> than shipping such an artifact. See [Signing](#signing).
 
 > ⚠️ **Use `https://` for the Store server.** Over plaintext `http://` your
 > bearer token traverses the network unencrypted and can be intercepted. The
@@ -89,6 +97,7 @@ jobs:
       - uses: greenticai/greentic-designer-extension-action@v2
         with:
           registry: oci://ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}
+          signing-key-pem: ${{ secrets.EXT_SIGNING_KEY_PEM }}
           version: ${{ github.ref_name }}
 ```
 
@@ -111,6 +120,49 @@ as long as the job has `permissions: packages: write`.
 | `gtdx-version` | no | *(latest release)* | Version constraint for `greentic-extension-sdk-cli` (e.g. `1.2` or `=1.2.3`). Stable pins come from crates.io; a `-research` pin (e.g. `=1.2.4-research`) installs from the SDK git tag. |
 | `rust-toolchain` | no | `1.95` | Rust toolchain (>= 1.95 for edition 2024). |
 | `cargo-component-version` | no | *(latest)* | `cargo-component` version pin. |
+| `signing-key-pem` | **yes** *(unless `allow-unsigned`)* | — | Ed25519 PKCS8 PEM signing key, as emitted by `gtdx keygen`. Pass a secret. See [Signing](#signing). |
+| `signing-key-id` | no | *(`env`)* | Label recorded as the signature key id in registry metadata. `[A-Za-z0-9._-]+` only. |
+| `expected-public-key` | no | — | Base64 ed25519 public key the produced artifact must be signed with. Fails the job on a mismatch. |
+| `allow-unsigned` | no | `false` | Publish without a signature. The artifact will not load under `greentic-ext-runtime`. |
+
+## Signing
+
+`greentic-ext-runtime` verifies every extension it loads in three steps: the
+`describe.json` inside the `.gtxpack` must carry a valid `signature`, the
+`manifest.json` ledger must match the files on disk, and the signing key must be
+the one **pinned for that extension id on first load** (trust on first use).
+
+Two consequences shape this action's defaults:
+
+1. **An unsigned publish is not a build failure — it is a silent outage.** The
+   Store accepts the artifact, and every host then refuses it at boot with
+   `signature verification failed: missing signature field`, logged at `warn`.
+   If an older signed version is still installed, the UI looks completely
+   healthy while no tenant ever receives the update. So the action **fails
+   closed**: no `signing-key-pem`, no publish.
+2. **The key must not change between versions.** Publishing v2 of an extension
+   under a different key than v1 was pinned with is refused as a publisher
+   mismatch — as unloadable as no signature at all. Set `expected-public-key` to
+   the key already pinned for these ids and the action will assert it.
+
+After `gtdx publish` returns, the action unzips the artifact it just produced,
+reads `describe.json` back out, and fails if the `signature` object is missing
+or was made by an unexpected key. The check runs on `dry-run: 'true'` too, which
+makes a PR job a genuine pre-flight for the release.
+
+```yaml
+      - uses: greenticai/greentic-designer-extension-action@v2
+        with:
+          store-url: https://store.greentic.cloud
+          store-token: ${{ secrets.GREENTIC_STORE_TOKEN }}
+          signing-key-pem: ${{ secrets.EXT_SIGNING_KEY_PEM }}
+          expected-public-key: 66L1j2dtYwoRQ2R6Bt8qkshdZmdb2IW8lLRgibxAI60=
+```
+
+Mint a key with `gtdx keygen` and store the PKCS8 PEM as a repository or
+organization secret. Fork PRs get an empty secret, so keep signed publishes off
+the `pull_request` trigger, or run them with `dry-run: 'true'` and
+`allow-unsigned: 'true'`.
 
 ## Outputs
 
@@ -128,6 +180,7 @@ Example of consuming outputs:
         id: publish
         with:
           registry: oci://ghcr.io/${{ github.repository_owner }}/my-ext
+          signing-key-pem: ${{ secrets.EXT_SIGNING_KEY_PEM }}
 
       - name: Comment on release
         run: |
@@ -156,6 +209,9 @@ jobs:
         with:
           registry: local
           dry-run: 'true'
+          # Fork PRs cannot read secrets, so there is no key to sign with. This
+          # job only checks that the project builds and validates.
+          allow-unsigned: 'true'
 ```
 
 ## Example — publish to a private Store server
@@ -165,6 +221,7 @@ jobs:
         with:
           store-url: https://my-private-store.example.com
           store-token: ${{ secrets.STORE_TOKEN }}
+          signing-key-pem: ${{ secrets.EXT_SIGNING_KEY_PEM }}
 ```
 
 ## How it works
@@ -174,12 +231,14 @@ Under the hood this action:
 1. Installs the requested Rust toolchain + `wasm32-wasip2` target (`dtolnay/rust-toolchain`, pinned to a commit SHA).
 2. Resolves the effective `gtdx` / `cargo-component` versions (the latest on crates.io when you don't pin one) and caches `~/.cargo/bin` keyed on them, so `cargo install` only runs on the first run, when you change an input, or when a newer version is published.
 3. Installs `cargo-component` and `gtdx` (`greentic-extension-sdk-cli`, which ships the `gtdx` binary) from crates.io — except a `-research` `gtdx-version` pin, which installs `gtdx` from the SDK git tag (research builds aren't published to crates.io).
-4. Runs `gtdx publish` with your inputs forwarded as flags.
-5. Parses `gtdx publish`'s stdout — the one-line JSON object (`--format json`) or the labelled human output — and exposes `sha256` / `registry-url` / `ext-id` / `version` as action outputs.
+4. Resolves the signing key, failing the job when none was supplied and `allow-unsigned` is not set.
+5. Runs `gtdx publish --sign` with your inputs forwarded as flags.
+6. Parses `gtdx publish`'s stdout — the one-line JSON object (`--format json`) or the labelled human output — and exposes `sha256` / `registry-url` / `ext-id` / `version` as action outputs.
+7. Unzips the produced `.gtxpack` and asserts its `describe.json` really carries a signature (and, with `expected-public-key`, the right one).
 
-> **Runner requirement:** parsing `--format json` output uses `jq`, which is preinstalled
-> on GitHub-hosted `ubuntu-latest`. On a minimal or self-hosted runner, install `jq` first
-> (the default `human` format does not need it).
+> **Runner requirement:** the signature check uses `unzip` and `jq`, and parsing
+> `--format json` output uses `jq`. Both are preinstalled on GitHub-hosted
+> `ubuntu-latest`. On a minimal or self-hosted runner, install them first.
 
 ## Versioning
 
