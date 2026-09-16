@@ -160,7 +160,7 @@ runs:
       # Pinned to a commit SHA for supply-chain safety. dtolnay/rust-toolchain
       # uses branch refs (master/stable/<version>) rather than version tags, so
       # this is master @ 2026-03-27. Dependabot keeps the pin moving.
-      uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
       with:
         toolchain: ${{ inputs.rust-toolchain }}
         targets: wasm32-wasip2
